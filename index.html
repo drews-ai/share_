@@ -1,0 +1,904 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShareWith Cycle Trading Wireframe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fdf8ef;
+      --paper: rgba(255, 255, 255, 0.78);
+      --ink: #1d2b2a;
+      --muted: #5a6a67;
+      --line: #d8ddd8;
+      --accent: #d35f3f;
+      --accent-soft: #f6d6ca;
+      --signal: #1f8a76;
+      --warn: #d68826;
+      --danger: #b33a3a;
+      --radius: 18px;
+      --shadow: 0 14px 38px rgba(20, 28, 28, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Space Grotesk", "Avenir Next", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 10%, rgba(211, 95, 63, 0.16), transparent 45%),
+        radial-gradient(circle at 82% 4%, rgba(31, 138, 118, 0.2), transparent 44%),
+        repeating-linear-gradient(120deg, rgba(29, 43, 42, 0.015) 0 2px, transparent 2px 24px),
+        var(--bg);
+      padding: 28px;
+    }
+
+    .shell {
+      max-width: 1260px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero {
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.74));
+      border: 1px solid rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      position: relative;
+      overflow: hidden;
+      animation: rise 420ms ease-out;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -48px;
+      top: -56px;
+      width: 190px;
+      height: 190px;
+      border-radius: 50%;
+      background: rgba(211, 95, 63, 0.15);
+      filter: blur(0.5px);
+    }
+
+    .eyebrow {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--signal);
+      margin: 0 0 6px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.55rem, 3vw, 2.45rem);
+      line-height: 1.14;
+      max-width: 740px;
+    }
+
+    .hero p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 780px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--paper);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+      border-radius: var(--radius);
+      padding: 16px;
+      animation: rise 420ms ease-out;
+    }
+
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 1.02rem;
+      letter-spacing: 0.01em;
+    }
+
+    .controls {
+      grid-column: span 12;
+      display: grid;
+      gap: 14px;
+    }
+
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    select,
+    input[type="number"],
+    button {
+      border-radius: 999px;
+      font: inherit;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+
+    select {
+      min-width: 340px;
+    }
+
+    input[type="number"] {
+      width: 110px;
+      background: #fff;
+      color: var(--ink);
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+
+    button {
+      border: 0;
+      background: linear-gradient(90deg, #1f8a76, #16685a);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 6px 16px rgba(31, 138, 118, 0.26);
+      transition: transform 140ms ease, box-shadow 140ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 20px rgba(31, 138, 118, 0.25);
+    }
+
+    .scenario-note {
+      font-size: 0.9rem;
+      color: var(--muted);
+      line-height: 1.45;
+      margin: 0;
+    }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(110px, 1fr));
+      gap: 8px;
+    }
+
+    .metric {
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.56);
+    }
+
+    .metric .label {
+      display: block;
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+
+    .metric .value {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    .workflow {
+      grid-column: span 4;
+    }
+
+    .board {
+      grid-column: span 4;
+    }
+
+    .pain {
+      grid-column: span 4;
+      display: grid;
+      gap: 14px;
+    }
+
+    .step-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.64);
+      border-radius: 12px;
+      padding: 10px;
+      display: grid;
+      gap: 4px;
+      transition: transform 150ms ease;
+    }
+
+    .step strong {
+      font-size: 0.9rem;
+    }
+
+    .step small {
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    .state-ok {
+      border-left: 4px solid var(--signal);
+    }
+
+    .state-warn {
+      border-left: 4px solid var(--warn);
+    }
+
+    .state-fail {
+      border-left: 4px solid var(--danger);
+    }
+
+    .agent-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .agent-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.68);
+      display: grid;
+      gap: 6px;
+    }
+
+    .agent-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .chip {
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 0.7rem;
+      font-family: "IBM Plex Mono", monospace;
+      letter-spacing: 0.03em;
+      border: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    .chip-auto {
+      color: #0f5f50;
+      border-color: rgba(31, 138, 118, 0.35);
+      background: rgba(31, 138, 118, 0.12);
+    }
+
+    .chip-choice {
+      color: #7f4d10;
+      border-color: rgba(214, 136, 38, 0.45);
+      background: rgba(214, 136, 38, 0.16);
+    }
+
+    .mini {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.81rem;
+      line-height: 1.35;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+    }
+
+    .list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
+
+    .list-item {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.68);
+      border-radius: 10px;
+      padding: 9px;
+    }
+
+    .list-item strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.87rem;
+    }
+
+    .pain-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.64);
+      display: grid;
+      gap: 7px;
+    }
+
+    .pain-card header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .severity {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(216, 221, 216, 0.6);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+
+    .slider-row {
+      display: grid;
+      gap: 4px;
+      margin-top: 2px;
+    }
+
+    .slider-row label {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .slider-row input {
+      width: 100%;
+      accent-color: #1f8a76;
+    }
+
+    .solution-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.72);
+      display: grid;
+      gap: 6px;
+      position: relative;
+    }
+
+    .solution-card.top {
+      border-color: rgba(211, 95, 63, 0.42);
+      box-shadow: inset 0 0 0 1px rgba(211, 95, 63, 0.2);
+    }
+
+    .solution-score {
+      position: absolute;
+      top: 9px;
+      right: 10px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.74rem;
+      color: var(--muted);
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      font-size: 0.72rem;
+      border-radius: 999px;
+      background: rgba(31, 138, 118, 0.1);
+      border: 1px solid rgba(31, 138, 118, 0.35);
+      color: #0d5f50;
+      padding: 3px 8px;
+    }
+
+    .footnote {
+      margin: 0;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .opt-box {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.68);
+      display: grid;
+      gap: 8px;
+    }
+
+    @media (max-width: 1120px) {
+      .workflow,
+      .board,
+      .pain {
+        grid-column: span 12;
+      }
+
+      .metric-strip {
+        grid-template-columns: repeat(3, minmax(100px, 1fr));
+      }
+    }
+
+    @media (max-width: 700px) {
+      body {
+        padding: 14px;
+      }
+
+      .hero {
+        padding: 16px;
+      }
+
+      .metric-strip {
+        grid-template-columns: repeat(2, minmax(96px, 1fr));
+      }
+
+      select {
+        min-width: 100%;
+      }
+
+      .control-row {
+        align-items: stretch;
+      }
+
+      button {
+        width: 100%;
+      }
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <p class="eyebrow">sharewith wireframe lab</p>
+      <h1>Cycle Trading Interaction POC</h1>
+      <p>
+        Click through realistic scenarios from your cycle-matching algorithm, auto-surface where execution breaks,
+        then narrow down which interventions to prototype first.
+      </p>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <h2>Scenario + Resolution Run</h2>
+        <div class="control-row">
+          <select id="scenarioSelect" aria-label="Scenario selector"></select>
+          <button id="runBtn" type="button">Run Resolution Day</button>
+        </div>
+        <div class="opt-box">
+          <div class="control-row">
+            <select id="objectiveProfileSelect" aria-label="Optimizer objective profile">
+              <option value="balanced">Objective: balanced</option>
+              <option value="high_trust_network">Objective: high trust network</option>
+            </select>
+            <label class="mini" for="optBudget">budget</label>
+            <input id="optBudget" type="number" min="4" max="120" value="40">
+            <label class="mini" for="optSeeds">seeds</label>
+            <input id="optSeeds" type="number" min="3" max="16" value="6">
+            <button id="optimizeBtn" type="button">Optimize Params</button>
+            <button id="applyBestBtn" type="button">Apply Best + Re-run</button>
+            <button id="resetParamsBtn" type="button">Reset Params</button>
+          </div>
+          <p id="optResult" class="scenario-note">Optimizer idle.</p>
+        </div>
+        <p id="scenarioNote" class="scenario-note"></p>
+        <div class="metric-strip" id="metricStrip"></div>
+      </section>
+
+      <section class="panel workflow">
+        <h2>Weekly Workflow Trace</h2>
+        <ul id="workflowList" class="step-list"></ul>
+      </section>
+
+      <section class="panel board">
+        <h2>Cycle Board</h2>
+        <div id="agentGrid" class="agent-grid"></div>
+        <h2 style="margin-top: 16px;">Matched Edges</h2>
+        <ul id="edgeList" class="list"></ul>
+        <h2 style="margin-top: 16px;">Detected Cycles</h2>
+        <ul id="cycleList" class="list"></ul>
+      </section>
+
+      <section class="panel pain">
+        <div>
+          <h2>Pain Points</h2>
+          <div id="painList" class="agent-grid"></div>
+        </div>
+
+        <div>
+          <h2>Solution Narrowing Funnel</h2>
+          <div class="control-row" style="margin-bottom: 10px;">
+            <button id="rerankBtn" type="button">Re-rank Solutions</button>
+          </div>
+          <div id="solutionList" class="agent-grid"></div>
+          <p class="footnote">Score uses pain severity x impact, then subtracts implementation effort.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      selectedScenario: "",
+      scenarios: [],
+      sliderValues: {},
+      lastRun: null,
+      activeParams: null,
+      bestOptimizedParams: null,
+    };
+
+    const scenarioSelect = document.getElementById("scenarioSelect");
+    const scenarioNote = document.getElementById("scenarioNote");
+    const runBtn = document.getElementById("runBtn");
+    const objectiveProfileSelect = document.getElementById("objectiveProfileSelect");
+    const optBudget = document.getElementById("optBudget");
+    const optSeeds = document.getElementById("optSeeds");
+    const optimizeBtn = document.getElementById("optimizeBtn");
+    const applyBestBtn = document.getElementById("applyBestBtn");
+    const resetParamsBtn = document.getElementById("resetParamsBtn");
+    const optResult = document.getElementById("optResult");
+    const rerankBtn = document.getElementById("rerankBtn");
+    const metricStrip = document.getElementById("metricStrip");
+    const workflowList = document.getElementById("workflowList");
+    const agentGrid = document.getElementById("agentGrid");
+    const edgeList = document.getElementById("edgeList");
+    const cycleList = document.getElementById("cycleList");
+    const painList = document.getElementById("painList");
+    const solutionList = document.getElementById("solutionList");
+
+    function average(values) {
+      if (!values.length) {
+        return 0;
+      }
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+        ...options,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `Request failed: ${response.status}`);
+      }
+
+      return response.json();
+    }
+
+    function findScenarioNote(key) {
+      const match = state.scenarios.find((scenario) => scenario.key === key);
+      return match ? match.note : "";
+    }
+
+    function renderMetrics(metrics) {
+      const entries = [
+        ["Potential edges", metrics.potentialEdges],
+        ["Feasible edges", metrics.feasibleEdges],
+        ["Matched", metrics.matchingSize],
+        ["Cycles", metrics.cycleCount],
+        ["Committed", metrics.completedCycles],
+        ["Unmatched wants", metrics.unmatchedWants],
+      ];
+
+      metricStrip.innerHTML = entries
+        .map(([label, value]) => `<div class="metric"><span class="label">${label}</span><span class="value">${value}</span></div>`)
+        .join("");
+    }
+
+    function renderWorkflow(workflow) {
+      workflowList.innerHTML = workflow
+        .map((step) => `<li class="step ${step.className}"><strong>${step.title}</strong><small>${step.detail}</small></li>`)
+        .join("");
+    }
+
+    function renderAgents(agents) {
+      agentGrid.innerHTML = agents
+        .map((agent) => {
+          const modeClass = agent.mode === "AUTO" ? "chip-auto" : "chip-choice";
+          const offers = agent.offers.map((offer) => offer.skill).join(", ");
+          const wants = agent.wants.map((want) => `${want.skill} (${want.context})`).join(", ");
+
+          return `
+            <article class="agent-card">
+              <div class="agent-head">
+                <strong>${agent.name}</strong>
+                <span class="chip ${modeClass}">${agent.mode}</span>
+              </div>
+              <p class="mini"><span class="mono">offers:</span> ${offers}</p>
+              <p class="mini"><span class="mono">wants:</span> ${wants}</p>
+              <p class="mini"><span class="mono">trust:</span> ${agent.trust.completion.toFixed(2)} completion / ${agent.trust.quality.toFixed(2)} quality</p>
+              <p class="mini"><span class="mono">patience:</span> ${agent.patience} cycles</p>
+            </article>
+          `;
+        })
+        .join("");
+    }
+
+    function renderEdges(matching) {
+      if (!matching.length) {
+        edgeList.innerHTML = '<li class="list-item">No admissible matches for this run.</li>';
+        return;
+      }
+
+      edgeList.innerHTML = matching
+        .slice(0, 8)
+        .map((edge) => `
+            <li class="list-item">
+              <strong>${edge.providerName} -> ${edge.receiverName}</strong>
+              <div class="mini">skill: ${edge.skill} | context: ${edge.context} | weight: ${edge.weight.toFixed(3)}</div>
+              <div class="mini">distance: ${edge.distance.toFixed(1)}mi / allowance ${edge.distanceAllowance.toFixed(1)}mi</div>
+            </li>
+          `)
+        .join("");
+    }
+
+    function renderCycles(cycles) {
+      if (!cycles.length) {
+        cycleList.innerHTML = '<li class="list-item">No closed cycles detected from the current matching.</li>';
+        return;
+      }
+
+      cycleList.innerHTML = cycles
+        .map((cycle, index) => `
+            <li class="list-item">
+              <strong>Cycle ${index + 1}</strong>
+              <div class="mini">${cycle.path.join(" -> ")}</div>
+              <div class="mini"><span class="mono">status:</span> ${cycle.status}</div>
+            </li>
+          `)
+        .join("");
+    }
+
+    function renderPainPoints(pains) {
+      painList.innerHTML = pains
+        .map((pain) => {
+          const value = Number(state.sliderValues[pain.id] ?? pain.severity);
+          return `
+            <article class="pain-card">
+              <header>
+                <strong>${pain.title}</strong>
+                <span class="severity" id="severity-${pain.id}">severity ${value}/5</span>
+              </header>
+              <p class="mini">${pain.description}</p>
+              <div class="slider-row">
+                <label for="slider-${pain.id}">Adjust severity for prioritization</label>
+                <input id="slider-${pain.id}" data-pain-id="${pain.id}" type="range" min="1" max="5" value="${value}">
+              </div>
+            </article>
+          `;
+        })
+        .join("");
+
+      painList.querySelectorAll("input[type='range']").forEach((input) => {
+        input.addEventListener("input", async (event) => {
+          const target = event.target;
+          const painId = target.getAttribute("data-pain-id");
+          const value = Number(target.value);
+          state.sliderValues[painId] = value;
+
+          const severityNode = document.getElementById(`severity-${painId}`);
+          if (severityNode) {
+            severityNode.textContent = `severity ${value}/5`;
+          }
+
+          await rerankSolutions();
+        });
+      });
+    }
+
+    function renderSolutions(solutions) {
+      solutionList.innerHTML = solutions
+        .map((solution, index) => {
+          const topClass = index < 3 ? "top" : "";
+          return `
+            <article class="solution-card ${topClass}">
+              <span class="solution-score">score ${solution.score.toFixed(1)}</span>
+              <strong>${solution.title}</strong>
+              <p class="mini">${solution.detail}</p>
+              <div class="tag-row">
+                ${solution.addresses.map((tag) => `<span class="tag">${tag.replace(/_/g, " ")}</span>`).join("")}
+              </div>
+              <div class="mini"><span class="mono">impact:</span> ${solution.impact}/5 | <span class="mono">effort:</span> ${solution.effort}/5</div>
+            </article>
+          `;
+        })
+        .join("");
+    }
+
+    function renderAll(payload) {
+      renderMetrics(payload.metrics);
+      renderWorkflow(payload.workflow);
+      renderAgents(payload.agents);
+      renderEdges(payload.matching);
+      renderCycles(payload.cycles);
+      renderPainPoints(payload.pains);
+      renderSolutions(payload.rankedSolutions);
+
+      const avgSeverity = average(payload.pains.map((pain) => Number(state.sliderValues[pain.id] ?? pain.severity))).toFixed(1);
+      scenarioNote.textContent = `${payload.scenarioNote} | seed ${payload.seed} | avg pain severity ${avgSeverity}/5`;
+    }
+
+    async function rerankSolutions() {
+      if (!state.lastRun) {
+        return;
+      }
+
+      const response = await requestJson("/api/rank", {
+        method: "POST",
+        body: JSON.stringify({
+          pains: state.lastRun.pains,
+          pain_levels: state.sliderValues,
+        }),
+      });
+
+      state.lastRun.rankedSolutions = response.rankedSolutions;
+      renderSolutions(response.rankedSolutions);
+    }
+
+    async function runResolution() {
+      runBtn.disabled = true;
+      runBtn.textContent = "Running...";
+
+      try {
+        const body = { scenario_key: state.selectedScenario };
+        if (state.activeParams) {
+          body.params = state.activeParams;
+        }
+
+        const payload = await requestJson("/api/run", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+
+        payload.pains.forEach((pain) => {
+          if (state.sliderValues[pain.id] == null) {
+            state.sliderValues[pain.id] = pain.severity;
+          }
+        });
+
+        state.lastRun = payload;
+        renderAll(payload);
+      } catch (error) {
+        scenarioNote.textContent = `Run failed: ${error.message}`;
+      } finally {
+        runBtn.disabled = false;
+        runBtn.textContent = "Run Resolution Day";
+      }
+    }
+
+    async function optimizeParams() {
+      optimizeBtn.disabled = true;
+      optimizeBtn.textContent = "Optimizing...";
+
+      try {
+        const budget = Number(optBudget.value) || 40;
+        const seeds = Number(optSeeds.value) || 6;
+        const objectiveProfile = objectiveProfileSelect.value || "balanced";
+
+        const response = await requestJson("/api/optimize", {
+          method: "POST",
+          body: JSON.stringify({
+            scenario_key: state.selectedScenario,
+            budget,
+            seeds,
+            objective_profile: objectiveProfile,
+          }),
+        });
+
+        state.bestOptimizedParams = response.best?.params || null;
+        const baseline = Number(response.baseline?.objectiveMean || 0);
+        const best = Number(response.best?.objectiveMean || 0);
+        const delta = best - baseline;
+        const profileLabel = response.objectiveProfile || objectiveProfile;
+        optResult.textContent = `Optimization (${profileLabel}) complete: baseline ${baseline.toFixed(3)} -> best ${best.toFixed(3)} (delta ${delta.toFixed(3)}). Candidate #${response.best?.candidateIndex}`;
+      } catch (error) {
+        optResult.textContent = `Optimization failed: ${error.message}`;
+      } finally {
+        optimizeBtn.disabled = false;
+        optimizeBtn.textContent = "Optimize Params";
+      }
+    }
+
+    async function applyBestParams() {
+      if (!state.bestOptimizedParams) {
+        optResult.textContent = "No optimized candidate available yet. Run Optimize Params first.";
+        return;
+      }
+      state.activeParams = state.bestOptimizedParams;
+      optResult.textContent = "Applied optimized params to active simulation runs.";
+      await runResolution();
+    }
+
+    async function resetParams() {
+      state.activeParams = null;
+      state.bestOptimizedParams = null;
+      optResult.textContent = "Reset to default parameters.";
+      await runResolution();
+    }
+
+    async function loadScenarios() {
+      const response = await requestJson("/api/scenarios");
+      state.scenarios = response.scenarios;
+
+      scenarioSelect.innerHTML = state.scenarios
+        .map((scenario) => `<option value="${scenario.key}">${scenario.name}</option>`)
+        .join("");
+
+      state.selectedScenario = state.scenarios[0]?.key || "";
+      scenarioSelect.value = state.selectedScenario;
+      scenarioNote.textContent = findScenarioNote(state.selectedScenario);
+    }
+
+    scenarioSelect.addEventListener("change", async (event) => {
+      state.selectedScenario = event.target.value;
+      state.activeParams = null;
+      state.bestOptimizedParams = null;
+      optResult.textContent = "Optimizer idle.";
+      scenarioNote.textContent = findScenarioNote(state.selectedScenario);
+      await runResolution();
+    });
+
+    runBtn.addEventListener("click", async () => {
+      await runResolution();
+    });
+
+    rerankBtn.addEventListener("click", async () => {
+      await rerankSolutions();
+    });
+
+    optimizeBtn.addEventListener("click", async () => {
+      await optimizeParams();
+    });
+
+    applyBestBtn.addEventListener("click", async () => {
+      await applyBestParams();
+    });
+
+    resetParamsBtn.addEventListener("click", async () => {
+      await resetParams();
+    });
+
+    async function bootstrap() {
+      try {
+        await loadScenarios();
+        await runResolution();
+      } catch (error) {
+        scenarioNote.textContent = `Startup failed: ${error.message}`;
+      }
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>
