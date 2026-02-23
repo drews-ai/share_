@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ShareWith Process Flow</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --accent: #0ea5e9;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      width: 100%;
+      height: 100%;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+    .toolbar button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .toolbar button:hover { border-color: var(--accent); }
+    .toolbar .hint {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #diagram-wrap {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(1200px 600px at 20% 0%, #eef6ff 0%, #f5f7fb 55%, #f8fafc 100%);
+    }
+    #diagram-wrap svg {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <div class="toolbar">
+      <button id="zoom-in" type="button">Zoom In</button>
+      <button id="zoom-out" type="button">Zoom Out</button>
+      <button id="fit" type="button">Fit</button>
+      <button id="reset" type="button">Reset</button>
+      <span class="hint">Drag to pan • Scroll to zoom</span>
+    </div>
+    <div id="diagram-wrap"></div>
+  </div>
+
+  <script id="graph-definition" type="text/plain">
+flowchart TD
+  START["sharewith_thesis_algo.py"]
+  EP{"Entry point"}
+  START --> EP
+  EP --> MAIN["main() full wave simulation"]
+  EP --> RUNSC["run_scenario() single scenario pipeline"]
+  EP --> OPT["optimize_parameters() Monte Carlo tuner"]
+  START --> NOTEHTTP["Note: HTTP imports exist, but no active handler/server runtime in current file"]
+
+  subgraph MAINFLOW["A) main() Full Wave/Tessellation Runtime"]
+    direction TB
+    M1["Bootstrap parse for --config-file"]
+    M2{"config file provided?"}
+    M3["_load_run_config() as parser defaults"]
+    M4["parse_args() full CLI parse"]
+    M5["_resolve_sparkov_dataset_dir()"]
+
+    M6{"Sparkov dataset available?"}
+    M7["_load_sparkov_category_map()"]
+    M8["_derive_sparkov_profile()"]
+    M9{"sparkov_apply_recommendations?"}
+    M10["_apply_sparkov_recommendations(args, profile)"]
+    M11{"sparkov_profile_out provided?"}
+    M12["Write Sparkov profile JSON"]
+
+    M13["_resolve_spice_parameters()"]
+    M14["Build SimulationConfig"]
+    M15["Resolve solver: scipy requested but unavailable => python fallback"]
+    M16["_build_agents() for all tessellations"]
+    M17["Apply EngineParams overrides: file, max_cycle_length, matching_solver"]
+    M18["Panel setup: fixed cohort or weekly resample"]
+    M19["Week loop: week = 1..N"]
+    M20["Select active agents for this week"]
+    M21["_run_wave_week(...)"]
+    M22{"matching_mode"}
+
+    M23["Global branch"]
+    M24["Partition-bridge branch"]
+
+    M25["_update_trail_memory() only if variant F"]
+    M26["_update_agents_from_projection()"]
+    M27["_cross_cell_stats() + build weekly row + print"]
+    M28{"More weeks?"}
+    M29["Build summary dict"]
+    M30["_write_csv(weekly_metrics.csv)"]
+    M31["Write summary.json"]
+    M32["_build_report() then write report.md"]
+    M33["Print output paths and exit"]
+
+    M1 --> M2
+    M2 -- yes --> M3 --> M4
+    M2 -- no --> M4
+    M4 --> M5 --> M6
+    M6 -- yes --> M7 --> M8 --> M9
+    M9 -- yes --> M10 --> M11
+    M9 -- no --> M11
+    M11 -- yes --> M12 --> M13
+    M11 -- no --> M13
+    M6 -- no --> M13
+
+    M13 --> M14 --> M15 --> M16 --> M17 --> M18 --> M19 --> M20 --> M21 --> M22
+    M22 -- global --> M23
+    M22 -- partition_bridge --> M24
+    M23 --> M26
+    M24 --> M26
+    M26 --> M27 --> M28
+    M28 -- yes --> M19
+    M28 -- no --> M29 --> M30 --> M31 --> M32 --> M33
+    M24 --> M25 --> M26
+  end
+
+  MAIN --> M1
+
+  subgraph WAVERUN["B) _run_wave_week() Internals"]
+    direction TB
+    W1["Compute reach_by_agent via _reach_hops()"]
+    W2["_build_edges_wave()"]
+    W3{"matching_mode == partition_bridge?"}
+
+    WG1["_max_weight_matching()"]
+    WG2["_detect_cycles()"]
+    WG3["_select_edge_disjoint_cycles()"]
+    WG4["_confirm_cycles()"]
+    WG5["_apply_atomic_commit()"]
+    WG6["_simulate_execution()"]
+    WG7["_project_trust_and_patience()"]
+    WG8["_derive_metrics()"]
+    WG9["Return metrics, projection, matching, cycles, reach_by_agent"]
+
+    WP1["Split feasible edges into local hop=0 and bridge hop<=bridge_hop"]
+    WP2["Run local stage via _run_stage_match()"]
+    WP3["Run bridge stage via _run_stage_match()"]
+    WP4["Fallback rounds on residual declarations"]
+    WP5["Merge stage outputs"]
+    WP6["_project_trust_and_patience()"]
+    WP7["_derive_metrics() + local/bridge/fallback counters"]
+
+    W1 --> W2 --> W3
+    W3 -- no global --> WG1 --> WG2 --> WG3 --> WG4 --> WG5 --> WG6 --> WG7 --> WG8 --> WG9
+    W3 -- yes partition_bridge --> WP1 --> WP2 --> WP3 --> WP4 --> WP5 --> WP6 --> WP7 --> WG9
+  end
+
+  M23 --> W1
+  M24 --> W1
+
+  subgraph EDGEBUILD["C) _build_edges_wave() Shared Edge Construction"]
+    direction TB
+    E1["_build_nodes() + _build_agent_index() + _centrality_map()"]
+    E2["Index offers by cell and context"]
+    E3["For each want: reachable cells from _cells_within()"]
+    E4["Topology hop metric: hex_voronoi axial or grid_queen"]
+    E5["_compute_edge() gates: context match, fit>=min_fit, trust floors, distance allowance"]
+    E6["_apply_variant_weight(): C baseline, D risk-adjusted, E fairness bonus, F pheromone bonus"]
+    E7["Sort feasible edges by descending weight"]
+    E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7
+  end
+
+  W2 -. uses .-> E1
+
+  subgraph MATCHING["D) _max_weight_matching() Solver Branch"]
+    direction TB
+    A1["Build weight matrix: real wants + pass columns"]
+    A2{"solver"}
+    A3["_hungarian_maximize() -> _hungarian_min_cost()"]
+    A4["_scipy_maximize() (fallback to Hungarian on exception)"]
+    A5["Emit matched edges only for real want columns"]
+    A1 --> A2
+    A2 -- python --> A3 --> A5
+    A2 -- scipy --> A4 --> A5
+  end
+
+  WG1 -. uses .-> A1
+  WP2 -. uses .-> A1
+  WP3 -. uses .-> A1
+  WP4 -. uses .-> A1
+
+  subgraph CYCLES["E) Cycle + Atomic Execution Semantics"]
+    direction TB
+    C1["_detect_cycles() DFS on provider->receiver graph"]
+    C2{"max_cycle_length <= 0?"}
+    C3["Uncapped mode: effective max = unique active agents"]
+    C4["Capped mode: effective max = configured max_cycle_length"]
+    C5["Cycle score = totalWeight + high_trust_cycle_bonus * trustCohesion"]
+    C6["_select_edge_disjoint_cycles() greedy by score"]
+    C7["_confirm_cycles(): CHOICE agents may decline"]
+    C8["_apply_atomic_commit(): linked-cycle all-or-none commit"]
+    C9["_simulate_execution(): completion probability then atomic rollback cascade"]
+    C10["_project_trust_and_patience(): EMA trust update, patience reset/increment"]
+    C11["_derive_metrics(): cycle survival, unmet wants, trust, distance, etc"]
+
+    C1 --> C2
+    C2 -- yes --> C3 --> C5
+    C2 -- no --> C4 --> C5
+    C5 --> C6 --> C7 --> C8 --> C9 --> C10 --> C11
+  end
+
+  WG2 -. uses .-> C1
+  WP2 -. uses .-> C1
+  WP3 -. uses .-> C1
+  WP4 -. uses .-> C1
+
+  subgraph RUNSCFLOW["F) run_scenario() Path"]
+    direction TB
+    R1["Validate scenario_key in SCENARIOS"]
+    R2["params = DEFAULT_PARAMS.with_overrides(params_override)"]
+    R3["_run_pipeline()"]
+    R4["_build_nodes() + _build_edges()"]
+    R5["_max_weight_matching() + cycle/confirm/atomic/execute/projection/metrics"]
+    R6["_detect_pains() + rank_solutions() + _build_workflow()"]
+    R7["Return payload: agents, matching, cycles, metrics, pains, ranked solutions"]
+    R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R7
+  end
+
+  RUNSC --> R1
+
+  subgraph OPTFLOW["G) optimize_parameters() Path"]
+    direction TB
+    O1["Validate scenario_key and objective_profile"]
+    O2["Generate candidates: baseline + _sample_params()"]
+    O3["For each candidate and seed: _run_pipeline()"]
+    O4["Score with _objective(metrics, profile)"]
+    O5["Aggregate objective mean/min/max and failure stats"]
+    O6["Sort and return best, topCandidates, baseline"]
+    O1 --> O2 --> O3 --> O4 --> O5 --> O6
+  end
+
+  OPT --> O1
+  </script>
+
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "loose",
+      theme: "default",
+      maxTextSize: 1000000,
+      flowchart: {
+        useMaxWidth: false,
+        htmlLabels: true,
+        curve: "basis",
+        nodeSpacing: 52,
+        rankSpacing: 76
+      }
+    });
+
+    const graph = document.getElementById("graph-definition").textContent;
+    const wrap = document.getElementById("diagram-wrap");
+
+    const { svg } = await mermaid.render("sharewith-process-flow", graph);
+    wrap.innerHTML = svg;
+
+    const panZoom = window.svgPanZoom(wrap.querySelector("svg"), {
+      zoomEnabled: true,
+      controlIconsEnabled: false,
+      fit: true,
+      center: true,
+      minZoom: 0.2,
+      maxZoom: 12,
+      zoomScaleSensitivity: 0.25
+    });
+
+    document.getElementById("zoom-in").addEventListener("click", () => panZoom.zoomIn());
+    document.getElementById("zoom-out").addEventListener("click", () => panZoom.zoomOut());
+    document.getElementById("fit").addEventListener("click", () => {
+      panZoom.fit();
+      panZoom.center();
+    });
+    document.getElementById("reset").addEventListener("click", () => {
+      panZoom.resetZoom();
+      panZoom.center();
+      panZoom.fit();
+    });
+
+    window.addEventListener("resize", () => {
+      panZoom.resize();
+      panZoom.fit();
+      panZoom.center();
+    });
+  </script>
+</body>
+</html>
