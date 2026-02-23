@@ -1148,6 +1148,14 @@ def _detect_cycles(
     for idx, edge in enumerate(matching_edges):
         edges_by_provider.setdefault(edge.provider_id, []).append(idx)
 
+    unique_agents = {edge.provider_id for edge in matching_edges}
+    unique_agents.update(edge.receiver_id for edge in matching_edges)
+    if max_cycle_len <= 0:
+        # "Uncapped" mode: allow cycles up to active graph size.
+        effective_max_cycle_len = max(2, len(unique_agents))
+    else:
+        effective_max_cycle_len = max(2, int(max_cycle_len))
+
     discovered: List[Dict[str, Any]] = []
     seen_signatures: set[Tuple[int, ...]] = set()
 
@@ -1158,7 +1166,7 @@ def _detect_cycles(
 
             if nxt == start_agent and path_edge_ids:
                 cycle_edge_ids = path_edge_ids + [edge_idx]
-                if len(cycle_edge_ids) < 2 or len(cycle_edge_ids) > max_cycle_len:
+                if len(cycle_edge_ids) < 2 or len(cycle_edge_ids) > effective_max_cycle_len:
                     continue
 
                 signature = tuple(sorted(cycle_edge_ids))
@@ -1185,7 +1193,7 @@ def _detect_cycles(
                 )
                 continue
 
-            if nxt in visited_agents or len(path_edge_ids) + 1 >= max_cycle_len:
+            if nxt in visited_agents or len(path_edge_ids) + 1 >= effective_max_cycle_len:
                 continue
 
             visited_agents.add(nxt)

@@ -1,0 +1,16 @@
+{
+  "grid": "3x3",
+  "agents_per_cell": 10000,
+  "weeks": 4,
+  "active_rate": 0.02,
+  "max_hop": 4,
+  "patience_per_hop": 1,
+  "matching_mode": "partition_bridge",
+  "bridge_hop": 1,
+  "fallback_rounds": 2,
+  "panel_mode": "fixed",
+  "variant": "E",
+  "spice_profile": "thesis_ideation",
+  "seed": 20260223,
+  "outdir": "../artifacts/presets/large_cohort_probe"
+}

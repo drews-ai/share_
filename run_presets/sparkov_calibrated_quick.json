@@ -1,0 +1,21 @@
+{
+  "sparkov_download": true,
+  "sparkov_max_rows": 300000,
+  "sparkov_category_map_file": "sparkov_category_skill_map.json",
+  "sparkov_profile_out": "../artifacts/presets/sparkov_calibrated_quick/sparkov_profile.json",
+  "sparkov_apply_recommendations": true,
+  "grid": "4x4",
+  "agents_per_cell": 600,
+  "weeks": 3,
+  "active_rate": 0.03,
+  "max_hop": 4,
+  "patience_per_hop": 1,
+  "matching_mode": "partition_bridge",
+  "bridge_hop": 1,
+  "fallback_rounds": 1,
+  "panel_mode": "fixed",
+  "variant": "E",
+  "spice_profile": "none",
+  "seed": 20260223,
+  "outdir": "../artifacts/presets/sparkov_calibrated_quick"
+}

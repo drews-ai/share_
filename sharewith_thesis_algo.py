@@ -45,6 +45,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
+try:
+    from scipy.optimize import linear_sum_assignment as _scipy_linear_sum_assignment
+    _SCIPY_AVAILABLE = True
+except Exception:
+    _scipy_linear_sum_assignment = None
+    _SCIPY_AVAILABLE = False
+
 
 # ============================================================
 # DOMAIN ENUMS + ENTITIES
@@ -262,6 +269,7 @@ class EngineParams:
     execution_quality_weight: float = 0.22
     execution_length_penalty: float = 0.09
     execution_distance_penalty: float = 0.012
+    matching_solver: str = "python"
 
     def to_wire(self) -> Dict[str, Any]:
         return {
@@ -291,6 +299,7 @@ class EngineParams:
             "execution_quality_weight": self.execution_quality_weight,
             "execution_length_penalty": self.execution_length_penalty,
             "execution_distance_penalty": self.execution_distance_penalty,
+            "matching_solver": self.matching_solver,
         }
 
     def with_overrides(self, overrides: Optional[Dict[str, Any]]) -> "EngineParams":
@@ -1077,6 +1086,36 @@ def _hungarian_maximize(weights: List[List[float]]) -> List[int]:
     return original_assignment
 
 
+def _scipy_maximize(weights: List[List[float]]) -> List[int]:
+    if _scipy_linear_sum_assignment is None:
+        return _hungarian_maximize(weights)
+
+    rows = len(weights)
+    cols = len(weights[0]) if rows else 0
+    if rows == 0 or cols == 0:
+        return []
+
+    # linear_sum_assignment minimizes; negate to maximize.
+    cost = [[-value for value in row] for row in weights]
+    try:
+        row_idx, col_idx = _scipy_linear_sum_assignment(cost)
+    except Exception:
+        # Preserve robustness if scipy backend fails on edge-case matrices.
+        return _hungarian_maximize(weights)
+
+    assignment = [-1] * rows
+    for r, c in zip(row_idx, col_idx):
+        assignment[int(r)] = int(c)
+    return assignment
+
+
+def _maximize_assignment(weights: List[List[float]], solver: str) -> List[int]:
+    solver_key = str(solver).strip().lower()
+    if solver_key == "scipy" and _SCIPY_AVAILABLE:
+        return _scipy_maximize(weights)
+    return _hungarian_maximize(weights)
+
+
 def _max_weight_matching(
     edges: List[Edge],
     offer_nodes: List[OfferNode],
@@ -1107,7 +1146,8 @@ def _max_weight_matching(
 
         matrix.append(row)
 
-    assignment = _hungarian_maximize(matrix)
+    solver_name = str(getattr(params, "matching_solver", "python"))
+    assignment = _maximize_assignment(matrix, solver=solver_name)
 
     matching: List[Edge] = []
     for offer_index, col in enumerate(assignment):
@@ -1159,6 +1199,14 @@ def _detect_cycles(
     for idx, edge in enumerate(matching_edges):
         edges_by_provider.setdefault(edge.provider_id, []).append(idx)
 
+    unique_agents = {edge.provider_id for edge in matching_edges}
+    unique_agents.update(edge.receiver_id for edge in matching_edges)
+    if max_cycle_len <= 0:
+        # "Uncapped" mode: allow cycles up to active graph size.
+        effective_max_cycle_len = max(2, len(unique_agents))
+    else:
+        effective_max_cycle_len = max(2, int(max_cycle_len))
+
     discovered: List[Dict[str, Any]] = []
     seen_signatures: set[Tuple[int, ...]] = set()
 
@@ -1169,7 +1217,7 @@ def _detect_cycles(
 
             if nxt == start_agent and path_edge_ids:
                 cycle_edge_ids = path_edge_ids + [edge_idx]
-                if len(cycle_edge_ids) < 2 or len(cycle_edge_ids) > max_cycle_len:
+                if len(cycle_edge_ids) < 2 or len(cycle_edge_ids) > effective_max_cycle_len:
                     continue
 
                 signature = tuple(sorted(cycle_edge_ids))
@@ -1196,7 +1244,7 @@ def _detect_cycles(
                 )
                 continue
 
-            if nxt in visited_agents or len(path_edge_ids) + 1 >= max_cycle_len:
+            if nxt in visited_agents or len(path_edge_ids) + 1 >= effective_max_cycle_len:
                 continue
 
             visited_agents.add(nxt)
@@ -2022,7 +2070,7 @@ def optimize_parameters(
 
 import csv
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -2072,6 +2120,10 @@ class SimulationConfig:
     matching_mode: str = "global"
     bridge_hop: int = 1
     fallback_rounds: int = 0
+    tessellation_topology: str = "hex_voronoi"
+    wave_expansion_mode: str = "week_ring"
+    context_weights: Optional[Dict[server.Context, float]] = None
+    skill_weights: Optional[Dict[server.Context, Dict[str, float]]] = None
 
 
 @dataclass
@@ -2181,6 +2233,55 @@ def _sample_declaration_count(rng: random.Random, max_count: int, decomposition_
     return int(rng.choices(counts, weights=normalized, k=1)[0])
 
 
+def _sample_context(rng: random.Random, cfg: SimulationConfig) -> server.Context:
+    contexts = (
+        server.Context.SAFETY,
+        server.Context.SOCIAL,
+        server.Context.GROWTH,
+        server.Context.SURVIVAL,
+        server.Context.LUXURY,
+    )
+    fallback_weights = (0.33, 0.24, 0.2, 0.16, 0.07)
+
+    if not cfg.context_weights:
+        return rng.choices(contexts, weights=fallback_weights)[0]
+
+    weights = [max(0.0, float(cfg.context_weights.get(ctx, 0.0))) for ctx in contexts]
+    if sum(weights) <= 0:
+        return rng.choices(contexts, weights=fallback_weights)[0]
+    return rng.choices(contexts, weights=weights)[0]
+
+
+def _sample_skill(rng: random.Random, cfg: SimulationConfig, context: server.Context) -> str:
+    pool = SKILL_POOLS[context]
+    if not cfg.skill_weights or context not in cfg.skill_weights:
+        return rng.choice(pool)
+
+    mapping = cfg.skill_weights[context]
+    weights = [max(0.0, float(mapping.get(skill, 0.0))) for skill in pool]
+    if sum(weights) <= 0:
+        return rng.choice(pool)
+    return str(rng.choices(pool, weights=weights, k=1)[0])
+
+
+def _sample_distinct_skill(
+    rng: random.Random,
+    cfg: SimulationConfig,
+    context: server.Context,
+    *,
+    avoid: str,
+) -> str:
+    pool = SKILL_POOLS[context]
+    if len(pool) <= 1:
+        return avoid
+    for _ in range(6):
+        choice = _sample_skill(rng, cfg, context)
+        if choice != avoid:
+            return choice
+    alternatives = [skill for skill in pool if skill != avoid]
+    return str(rng.choice(alternatives))
+
+
 def _want_from_skill(context: server.Context, skill: str, bundle_tag: str = "") -> server.Want:
     return server.Want(skill=skill, context=context, tags=(skill, context.value.lower()))
 
@@ -2213,7 +2314,7 @@ def _build_wants_with_ideation(
         want_context = primary_context
         if rng.random() < cfg.cross_context_want_rate:
             want_context = rng.choice(CONTEXT_NEIGHBORS[primary_context])
-        want_skill = rng.choice(SKILL_POOLS[want_context])
+        want_skill = _sample_skill(rng=rng, cfg=cfg, context=want_context)
         wants.append(_want_from_skill(context=want_context, skill=want_skill, bundle_tag=bundle_tag))
 
     return wants
@@ -2236,7 +2337,7 @@ def _build_offers_with_ideation(
 
     offers: List[server.Offer] = []
     anchor_context = primary_context
-    anchor_skill = rng.choice(SKILL_POOLS[anchor_context])
+    anchor_skill = _sample_skill(rng=rng, cfg=cfg, context=anchor_context)
     offers.append(_offer_from_skill(context=anchor_context, skill=anchor_skill, supply_tag="capacity:anchor"))
 
     want_contexts = [want.context for want in wants]
@@ -2250,7 +2351,7 @@ def _build_offers_with_ideation(
             offer_skill = anchor_skill
             supply_tag = "capacity:repeat"
         else:
-            offer_skill = rng.choice(SKILL_POOLS[offer_context])
+            offer_skill = _sample_skill(rng=rng, cfg=cfg, context=offer_context)
             supply_tag = ""
         offers.append(_offer_from_skill(context=offer_context, skill=offer_skill, supply_tag=supply_tag))
 
@@ -2264,14 +2365,6 @@ def _build_agents(cfg: SimulationConfig) -> Tuple[List[server.Agent], Dict[str, 
     all_cells: List[Tuple[int, int]] = []
 
     aid = 0
-    contexts = (
-        server.Context.SAFETY,
-        server.Context.SOCIAL,
-        server.Context.GROWTH,
-        server.Context.SURVIVAL,
-        server.Context.LUXURY,
-    )
-    context_weights = (0.33, 0.24, 0.2, 0.16, 0.07)
     baseline_declarations = (
         cfg.max_offers_per_agent <= 1
         and cfg.max_wants_per_agent <= 1
@@ -2283,13 +2376,10 @@ def _build_agents(cfg: SimulationConfig) -> Tuple[List[server.Agent], Dict[str, 
         for cy in range(cfg.grid.height):
             all_cells.append((cx, cy))
             for i in range(cfg.agents_per_cell):
-                context = rng.choices(contexts, weights=context_weights)[0]
+                context = _sample_context(rng=rng, cfg=cfg)
                 if baseline_declarations:
-                    pool = SKILL_POOLS[context]
-                    pidx = rng.randrange(len(pool))
-                    widx = (pidx + rng.randint(1, len(pool) - 1)) % len(pool)
-                    offer_skill = pool[pidx]
-                    want_skill = pool[widx]
+                    offer_skill = _sample_skill(rng=rng, cfg=cfg, context=context)
+                    want_skill = _sample_distinct_skill(rng=rng, cfg=cfg, context=context, avoid=offer_skill)
                     offers = [server.Offer(skill=offer_skill, context=context, tags=(offer_skill, context.value.lower()))]
                     wants = [server.Want(skill=want_skill, context=context, tags=(want_skill, context.value.lower()))]
                 else:
@@ -2320,26 +2410,63 @@ def _build_agents(cfg: SimulationConfig) -> Tuple[List[server.Agent], Dict[str, 
     return agents, home_cell, all_cells
 
 
-def _hop_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
-    # "Touching tessellations" includes diagonals in this grid approximation.
-    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+def _hop_distance(
+    a: Tuple[int, int],
+    b: Tuple[int, int],
+    *,
+    topology: str = "hex_voronoi",
+) -> int:
+    # Hex axial distance approximates Voronoi-neighbor ring expansion.
+    if topology == "hex_voronoi":
+        dq = a[0] - b[0]
+        dr = a[1] - b[1]
+        return int((abs(dq) + abs(dq + dr) + abs(dr)) / 2)
+    if topology == "grid_queen":
+        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+    raise ValueError(f"Unknown tessellation topology: {topology}")
 
 
-def _cells_within(cell: Tuple[int, int], hop: int, cfg: CellConfig) -> List[Tuple[int, int]]:
+def _cells_within(
+    cell: Tuple[int, int],
+    hop: int,
+    cfg: CellConfig,
+    *,
+    topology: str = "hex_voronoi",
+) -> List[Tuple[int, int]]:
     out: List[Tuple[int, int]] = []
-    for dx in range(-hop, hop + 1):
-        for dy in range(-hop, hop + 1):
-            nx = cell[0] + dx
-            ny = cell[1] + dy
-            if 0 <= nx < cfg.width and 0 <= ny < cfg.height:
+    x0 = max(0, cell[0] - hop)
+    x1 = min(cfg.width - 1, cell[0] + hop)
+    y0 = max(0, cell[1] - hop)
+    y1 = min(cfg.height - 1, cell[1] + hop)
+
+    for nx in range(x0, x1 + 1):
+        for ny in range(y0, y1 + 1):
+            if _hop_distance((nx, ny), cell, topology=topology) <= hop:
                 out.append((nx, ny))
     return out
 
 
-def _reach_hops(patience: int, max_hop: int, patience_per_hop: int) -> int:
+def _reach_hops(
+    patience: int,
+    max_hop: int,
+    patience_per_hop: int,
+    *,
+    week_index: int = 1,
+    wave_expansion_mode: str = "week_ring",
+) -> int:
+    week_hop = max(0, int(week_index) - 1)
     if patience_per_hop <= 0:
-        return max_hop
-    return int(_clamp(float(patience // patience_per_hop), 0.0, float(max_hop)))
+        patience_hop = max_hop
+    else:
+        patience_hop = int(_clamp(float(patience // patience_per_hop), 0.0, float(max_hop)))
+
+    if wave_expansion_mode == "week_ring":
+        return int(_clamp(float(week_hop), 0.0, float(max_hop)))
+    if wave_expansion_mode == "patience":
+        return patience_hop
+    if wave_expansion_mode == "week_plus_patience":
+        return int(_clamp(float(max(week_hop, patience_hop)), 0.0, float(max_hop)))
+    raise ValueError(f"Unknown wave_expansion_mode: {wave_expansion_mode}")
 
 
 def _build_edges_wave(
@@ -2348,6 +2475,7 @@ def _build_edges_wave(
     home_cell: Dict[str, Tuple[int, int]],
     reach_by_agent: Dict[str, int],
     grid: CellConfig,
+    topology: str = "hex_voronoi",
     variant: str = "C",
     trail_memory: Dict[TrailKey, float] | None = None,
 ) -> Tuple[List[server.Edge], List[server.Edge], List[server.OfferNode], List[server.WantNode]]:
@@ -2361,7 +2489,7 @@ def _build_edges_wave(
         cell = home_cell[offer_node.agent_id]
         offers_by_cell_ctx[(cell[0], cell[1], offer_node.offer.context)].append(offer_node)
 
-    cell_cache: Dict[Tuple[Tuple[int, int], int], List[Tuple[int, int]]] = {}
+    cell_cache: Dict[Tuple[Tuple[int, int], int, str], List[Tuple[int, int]]] = {}
     potential_edges: List[server.Edge] = []
     feasible_edges: List[server.Edge] = []
 
@@ -2370,16 +2498,16 @@ def _build_edges_wave(
         receiver_cell = home_cell[receiver.agent_id]
         receiver_hop = reach_by_agent[receiver.agent_id]
         want_context = want_node.want.context
-        key = (receiver_cell, receiver_hop)
+        key = (receiver_cell, receiver_hop, topology)
         if key not in cell_cache:
-            cell_cache[key] = _cells_within(receiver_cell, receiver_hop, cfg=grid)
+            cell_cache[key] = _cells_within(receiver_cell, receiver_hop, cfg=grid, topology=topology)
         for cell in cell_cache[key]:
             for offer_node in offers_by_cell_ctx.get((cell[0], cell[1], want_context), []):
                 if offer_node.agent_id == want_node.agent_id:
                     continue
                 provider = agents_by_id[offer_node.agent_id]
                 # Receiver-centric wave filter: receiver can only "see" providers within hop radius.
-                if _hop_distance(home_cell[provider.agent_id], receiver_cell) > receiver_hop:
+                if _hop_distance(home_cell[provider.agent_id], receiver_cell, topology=topology) > receiver_hop:
                     continue
                 edge = server._compute_edge(
                     provider=provider,
@@ -2597,6 +2725,9 @@ def _run_wave_week_partition_bridge(
     grid: CellConfig,
     max_hop: int,
     patience_per_hop: int,
+    week_index: int,
+    wave_expansion_mode: str,
+    topology: str,
     seed: int,
     variant: str,
     trail_memory: Dict[TrailKey, float] | None,
@@ -2609,6 +2740,8 @@ def _run_wave_week_partition_bridge(
             patience=agent.patience,
             max_hop=max_hop,
             patience_per_hop=patience_per_hop,
+            week_index=week_index,
+            wave_expansion_mode=wave_expansion_mode,
         )
         for agent in active_agents
     }
@@ -2619,6 +2752,7 @@ def _run_wave_week_partition_bridge(
         home_cell=home_cell,
         reach_by_agent=reach_by_agent,
         grid=grid,
+        topology=topology,
         variant=variant,
         trail_memory=trail_memory,
     )
@@ -2631,7 +2765,7 @@ def _run_wave_week_partition_bridge(
     local_edges: List[server.Edge] = []
     bridge_edges: List[server.Edge] = []
     for edge in feasible_edges:
-        hop = _hop_distance(home_cell[edge.provider_id], home_cell[edge.receiver_id])
+        hop = _hop_distance(home_cell[edge.provider_id], home_cell[edge.receiver_id], topology=topology)
         if hop == 0:
             local_edges.append(edge)
         elif hop <= max(1, bridge_hop):
@@ -2738,6 +2872,9 @@ def _run_wave_week(
     max_hop: int,
     patience_per_hop: int,
     seed: int,
+    week_index: int = 1,
+    wave_expansion_mode: str = "week_ring",
+    topology: str = "hex_voronoi",
     variant: str = "C",
     trail_memory: Dict[TrailKey, float] | None = None,
     matching_mode: str = "global",
@@ -2752,6 +2889,9 @@ def _run_wave_week(
             grid=grid,
             max_hop=max_hop,
             patience_per_hop=patience_per_hop,
+            week_index=week_index,
+            wave_expansion_mode=wave_expansion_mode,
+            topology=topology,
             seed=seed,
             variant=variant,
             trail_memory=trail_memory,
@@ -2767,6 +2907,8 @@ def _run_wave_week(
             patience=agent.patience,
             max_hop=max_hop,
             patience_per_hop=patience_per_hop,
+            week_index=week_index,
+            wave_expansion_mode=wave_expansion_mode,
         )
         for agent in active_agents
     }
@@ -2777,6 +2919,7 @@ def _run_wave_week(
         home_cell=home_cell,
         reach_by_agent=reach_by_agent,
         grid=grid,
+        topology=topology,
         variant=variant,
         trail_memory=trail_memory,
     )
@@ -2826,11 +2969,13 @@ def _cross_cell_stats(
     matching: Sequence[server.Edge],
     cycles: Sequence[Dict[str, Any]],
     home_cell: Dict[str, Tuple[int, int]],
+    *,
+    topology: str = "hex_voronoi",
 ) -> Dict[str, float]:
     matching_cross = 0
     matching_hops: List[int] = []
     for edge in matching:
-        hop = _hop_distance(home_cell[edge.provider_id], home_cell[edge.receiver_id])
+        hop = _hop_distance(home_cell[edge.provider_id], home_cell[edge.receiver_id], topology=topology)
         matching_hops.append(float(hop))
         if hop > 0:
             matching_cross += 1
@@ -2842,7 +2987,7 @@ def _cross_cell_stats(
     completed_cross = 0
     completed_hops: List[int] = []
     for edge in completed_edges:
-        hop = _hop_distance(home_cell[edge.provider_id], home_cell[edge.receiver_id])
+        hop = _hop_distance(home_cell[edge.provider_id], home_cell[edge.receiver_id], topology=topology)
         completed_hops.append(float(hop))
         if hop > 0:
             completed_cross += 1
@@ -2911,14 +3056,23 @@ def _build_report(cfg: SimulationConfig, weekly_rows: List[Dict[str, Any]], summ
     report.append(f"- Active declaration rate per week: `{cfg.active_rate:.4f}`")
     report.append(f"- Max wave hop: `{cfg.max_hop}`")
     report.append(f"- Patience per hop: `{cfg.patience_per_hop}`")
+    report.append(
+        f"- Matching solver (requested -> resolved): "
+        f"`{summary.get('solver_requested', 'python')} -> {summary.get('solver_resolved', 'python')}`"
+    )
+    report.append(f"- SciPy available: `{summary.get('scipy_available', False)}`")
     report.append(f"- Matching mode: `{cfg.matching_mode}`")
     report.append(f"- Bridge hop: `{cfg.bridge_hop}`")
     report.append(f"- Fallback rounds: `{cfg.fallback_rounds}`")
+    report.append(f"- Tessellation topology: `{cfg.tessellation_topology}`")
+    report.append(f"- Wave expansion mode: `{cfg.wave_expansion_mode}`")
     report.append(f"- Spice profile: `{cfg.spice_profile}`")
     report.append(f"- Max offers per agent: `{cfg.max_offers_per_agent}`")
     report.append(f"- Max wants per agent: `{cfg.max_wants_per_agent}`")
     report.append(f"- Need decomposition rate: `{cfg.decomposition_rate:.3f}`")
     report.append(f"- Cross-context want rate: `{cfg.cross_context_want_rate:.3f}`")
+    report.append(f"- Max cycle length setting: `{summary.get('max_cycle_length_setting', 'n/a')}`")
+    report.append(f"- Unbounded cycle length mode: `{summary.get('unbounded_cycle_length_mode', False)}`")
     report.append(f"- Runtime seconds: `{elapsed_s:.3f}`")
     report.append("")
     report.append("## Summary")
@@ -2943,6 +3097,7 @@ def _build_report(cfg: SimulationConfig, weekly_rows: List[Dict[str, Any]], summ
                 "feasible_edges",
                 "cycle_count",
                 "completed_cycles",
+                "max_cycle_length_observed",
                 "completed_per_1000_active",
                 "unmet_ratio",
                 "avg_trust",
@@ -2961,14 +3116,370 @@ def _build_report(cfg: SimulationConfig, weekly_rows: List[Dict[str, Any]], summ
     return "\n".join(report)
 
 
-def parse_args() -> argparse.Namespace:
+_RUN_CONFIG_ALLOWED_KEYS = {
+    "grid",
+    "agents_per_cell",
+    "weeks",
+    "active_rate",
+    "max_hop",
+    "patience_per_hop",
+    "matching_mode",
+    "bridge_hop",
+    "fallback_rounds",
+    "tessellation_topology",
+    "wave_expansion_mode",
+    "panel_mode",
+    "variant",
+    "spice_profile",
+    "max_offers_per_agent",
+    "max_wants_per_agent",
+    "decomposition_rate",
+    "cross_context_want_rate",
+    "solver",
+    "max_cycle_length",
+    "params_overrides_file",
+    "sparkov_dataset_dir",
+    "sparkov_download",
+    "sparkov_max_rows",
+    "sparkov_category_map_file",
+    "sparkov_profile_out",
+    "sparkov_apply_recommendations",
+    "seed",
+    "outdir",
+}
+_RUN_CONFIG_PATH_KEYS = {
+    "params_overrides_file",
+    "outdir",
+    "sparkov_dataset_dir",
+    "sparkov_category_map_file",
+    "sparkov_profile_out",
+}
+
+SPARKOV_DEFAULT_HANDLE = "kartik2112/fraud-detection"
+SPARKOV_DEFAULT_CATEGORY_MAP_FILE = ROOT / "run_presets" / "sparkov_category_skill_map.json"
+
+
+def _normalize_weight_map(raw: Dict[str, float], keys: Sequence[str]) -> Dict[str, float]:
+    prepared = {key: max(0.0, float(raw.get(key, 0.0))) for key in keys}
+    total = sum(prepared.values())
+    if total <= 0:
+        uniform = 1.0 / max(len(keys), 1)
+        return {key: uniform for key in keys}
+    return {key: value / total for key, value in prepared.items()}
+
+
+def _load_sparkov_category_map(map_file: Optional[Path]) -> Dict[str, Dict[str, Any]]:
+    resolved = (map_file or SPARKOV_DEFAULT_CATEGORY_MAP_FILE).expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Sparkov category map file not found: {resolved}")
+
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Sparkov category map must be a JSON object.")
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for category, cfg in payload.items():
+        if not isinstance(cfg, dict):
+            continue
+        context = _context_from_value(cfg.get("context"))
+        if context is None:
+            continue
+        skills_raw = cfg.get("skills", {})
+        if not isinstance(skills_raw, dict):
+            continue
+        valid_skills = {skill: float(weight) for skill, weight in skills_raw.items() if skill in SKILL_POOLS[context]}
+        if not valid_skills:
+            continue
+        normalized[category] = {
+            "context": context.value,
+            "skills": _normalize_weight_map(valid_skills, SKILL_POOLS[context]),
+        }
+
+    if not normalized:
+        raise ValueError(f"Sparkov category map produced no valid category mappings: {resolved}")
+    return normalized
+
+
+def _download_sparkov_dataset() -> Path:
+    try:
+        import kagglehub  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "kagglehub is required for --sparkov-download. Install with `pip install kagglehub`."
+        ) from exc
+
+    dataset_path = kagglehub.dataset_download(SPARKOV_DEFAULT_HANDLE)
+    return Path(str(dataset_path)).expanduser().resolve()
+
+
+def _resolve_sparkov_dataset_dir(args: argparse.Namespace) -> Optional[Path]:
+    if args.sparkov_dataset_dir is not None:
+        return args.sparkov_dataset_dir.expanduser().resolve()
+    if args.sparkov_download:
+        return _download_sparkov_dataset()
+    return None
+
+
+def _derive_sparkov_profile(
+    dataset_dir: Path,
+    category_map: Dict[str, Dict[str, Any]],
+    *,
+    max_rows: Optional[int] = None,
+) -> Dict[str, Any]:
+    csv_files: List[Path] = []
+    for filename in ("fraudTrain.csv", "fraudTest.csv"):
+        path = dataset_dir / filename
+        if path.exists():
+            csv_files.append(path)
+    if not csv_files:
+        raise FileNotFoundError(f"No Sparkov CSV files found under {dataset_dir}. Expected fraudTrain.csv/fraudTest.csv")
+
+    category_counts: Counter[str] = Counter()
+    context_counts: Counter[str] = Counter()
+    skill_scores: Dict[str, Counter[str]] = {ctx.value: Counter() for ctx in server.Context}
+
+    mapped_rows = 0
+    rows = 0
+    fraud_rows = 0
+    amount_sum = 0.0
+    min_unix: Optional[int] = None
+    max_unix: Optional[int] = None
+
+    unique_cards: set[str] = set()
+    unique_merchants: set[str] = set()
+    card_categories: Dict[str, set[str]] = defaultdict(set)
+    card_contexts: Dict[str, set[str]] = defaultdict(set)
+
+    for csv_path in csv_files:
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if max_rows is not None and rows >= max_rows:
+                    break
+                category = str(row.get("category", "")).strip()
+                if not category:
+                    continue
+
+                rows += 1
+                category_counts[category] += 1
+
+                try:
+                    amount_sum += float(row.get("amt", 0.0) or 0.0)
+                except ValueError:
+                    pass
+
+                try:
+                    is_fraud = int(float(row.get("is_fraud", 0) or 0))
+                    fraud_rows += 1 if is_fraud > 0 else 0
+                except ValueError:
+                    pass
+
+                try:
+                    unix_time = int(float(row.get("unix_time", 0) or 0))
+                except ValueError:
+                    unix_time = 0
+                if unix_time > 0:
+                    min_unix = unix_time if min_unix is None else min(min_unix, unix_time)
+                    max_unix = unix_time if max_unix is None else max(max_unix, unix_time)
+
+                card = str(row.get("cc_num", "")).strip()
+                if card:
+                    unique_cards.add(card)
+                    card_categories[card].add(category)
+
+                merchant = str(row.get("merchant", "")).strip()
+                if merchant:
+                    unique_merchants.add(merchant)
+
+                mapping = category_map.get(category)
+                if mapping is None:
+                    continue
+
+                mapped_rows += 1
+                context_name = mapping["context"]
+                context_counts[context_name] += 1
+                if card:
+                    card_contexts[card].add(context_name)
+
+                for skill, weight in mapping["skills"].items():
+                    skill_scores[context_name][skill] += float(weight)
+
+            if max_rows is not None and rows >= max_rows:
+                break
+
+    if rows <= 0:
+        raise ValueError(f"Sparkov profile derivation found zero rows in {dataset_dir}")
+
+    default_context = {
+        server.Context.SAFETY.value: 0.33,
+        server.Context.SOCIAL.value: 0.24,
+        server.Context.GROWTH.value: 0.2,
+        server.Context.SURVIVAL.value: 0.16,
+        server.Context.LUXURY.value: 0.07,
+    }
+    context_weights = _normalize_weight_map(
+        {ctx.value: float(context_counts.get(ctx.value, 0.0)) for ctx in server.Context},
+        [ctx.value for ctx in server.Context],
+    )
+    if mapped_rows <= 0:
+        context_weights = default_context
+
+    normalized_skill_weights: Dict[str, Dict[str, float]] = {}
+    for context in server.Context:
+        pool = SKILL_POOLS[context]
+        raw_scores = skill_scores[context.value]
+        if not raw_scores:
+            normalized_skill_weights[context.value] = _normalize_weight_map({}, pool)
+            continue
+        normalized_skill_weights[context.value] = _normalize_weight_map(
+            {skill: float(raw_scores.get(skill, 0.0)) for skill in pool},
+            pool,
+        )
+
+    cards_count = max(1, len(unique_cards))
+    categories_per_card = [len(v) for v in card_categories.values()] or [1]
+    contexts_per_card = [len(v) for v in card_contexts.values()] or [1]
+
+    mean_categories_per_card = _mean(float(v) for v in categories_per_card)
+    mean_contexts_per_card = _mean(float(v) for v in contexts_per_card)
+    share_multi_category_cards = sum(1 for v in categories_per_card if v > 1) / len(categories_per_card)
+
+    if min_unix is not None and max_unix is not None:
+        days_span = max(1.0, float(max_unix - min_unix) / 86_400.0)
+    else:
+        days_span = 1.0
+
+    tx_per_card_per_day = float(rows) / float(cards_count) / days_span
+    recommended_max_wants = int(_clamp(round(mean_categories_per_card / 3.2), 1.0, 5.0))
+    recommended_max_offers = int(_clamp(round(mean_contexts_per_card / 1.7), 1.0, 5.0))
+    recommended_decomposition = _clamp((mean_categories_per_card - 1.0) / 10.0, 0.05, 0.75)
+    recommended_cross_context = _clamp((mean_contexts_per_card - 1.0) / 6.0, 0.02, 0.45)
+    recommended_active_rate = _clamp(tx_per_card_per_day / 3.0, 0.01, 0.3)
+
+    return {
+        "dataset_dir": str(dataset_dir),
+        "files": [path.name for path in csv_files],
+        "rows_profiled": rows,
+        "rows_mapped": mapped_rows,
+        "mapping_coverage": float(mapped_rows) / float(rows),
+        "unique_cards": len(unique_cards),
+        "unique_merchants": len(unique_merchants),
+        "fraud_rate": float(fraud_rows) / float(rows),
+        "mean_amount": amount_sum / float(rows),
+        "days_span": days_span,
+        "tx_per_card_per_day": tx_per_card_per_day,
+        "mean_categories_per_card": mean_categories_per_card,
+        "mean_contexts_per_card": mean_contexts_per_card,
+        "share_multi_category_cards": share_multi_category_cards,
+        "category_counts": dict(sorted(category_counts.items(), key=lambda kv: kv[1], reverse=True)),
+        "context_counts": dict(context_counts),
+        "context_weights": context_weights,
+        "skill_weights": normalized_skill_weights,
+        "recommended": {
+            "max_offers_per_agent": recommended_max_offers,
+            "max_wants_per_agent": recommended_max_wants,
+            "decomposition_rate": recommended_decomposition,
+            "cross_context_want_rate": recommended_cross_context,
+            "active_rate_hint": recommended_active_rate,
+        },
+    }
+
+
+def _sparkov_cfg_context_weights(profile: Dict[str, Any]) -> Dict[server.Context, float]:
+    raw = profile.get("context_weights", {})
+    return {ctx: float(raw.get(ctx.value, 0.0)) for ctx in server.Context}
+
+
+def _sparkov_cfg_skill_weights(profile: Dict[str, Any]) -> Dict[server.Context, Dict[str, float]]:
+    raw = profile.get("skill_weights", {})
+    out: Dict[server.Context, Dict[str, float]] = {}
+    for ctx in server.Context:
+        ctx_raw = raw.get(ctx.value, {})
+        out[ctx] = {skill: float(ctx_raw.get(skill, 0.0)) for skill in SKILL_POOLS[ctx]}
+    return out
+
+
+def _apply_sparkov_recommendations(args: argparse.Namespace, profile: Dict[str, Any]) -> None:
+    rec = profile.get("recommended", {})
+    if args.max_offers_per_agent is None:
+        args.max_offers_per_agent = int(rec.get("max_offers_per_agent", 1))
+    if args.max_wants_per_agent is None:
+        args.max_wants_per_agent = int(rec.get("max_wants_per_agent", 1))
+    if args.decomposition_rate is None:
+        args.decomposition_rate = float(rec.get("decomposition_rate", 0.0))
+    if args.cross_context_want_rate is None:
+        args.cross_context_want_rate = float(rec.get("cross_context_want_rate", 0.0))
+
+
+def _normalize_run_config_key(raw_key: str) -> str:
+    return raw_key.strip().replace("-", "_")
+
+
+def _load_run_config(config_file: Path) -> Dict[str, Any]:
+    payload = json.loads(config_file.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("config-file must contain a JSON object.")
+
+    if "run" in payload:
+        run_section = payload["run"]
+        if not isinstance(run_section, dict):
+            raise ValueError("config-file field 'run' must be a JSON object.")
+        payload = run_section
+
+    normalized: Dict[str, Any] = {}
+    for key, value in payload.items():
+        normalized[_normalize_run_config_key(key)] = value
+
+    unknown_keys = sorted(key for key in normalized if key not in _RUN_CONFIG_ALLOWED_KEYS)
+    if unknown_keys:
+        allowed_keys = ", ".join(sorted(_RUN_CONFIG_ALLOWED_KEYS))
+        raise ValueError(f"Unknown config-file keys: {unknown_keys}. Allowed keys: {allowed_keys}")
+
+    for key in _RUN_CONFIG_PATH_KEYS:
+        if key not in normalized:
+            continue
+        value = normalized[key]
+        if value in (None, ""):
+            normalized[key] = None
+            continue
+        path_value = Path(str(value)).expanduser()
+        if not path_value.is_absolute():
+            path_value = (config_file.parent / path_value).resolve()
+        normalized[key] = path_value
+
+    return normalized
+
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--config-file", type=Path, default=None, help=argparse.SUPPRESS)
+    bootstrap_args, _ = bootstrap.parse_known_args(argv)
+
+    config_defaults: Dict[str, Any] = {}
+    resolved_config_file: Optional[Path] = None
+    if bootstrap_args.config_file is not None:
+        resolved_config_file = bootstrap_args.config_file.expanduser().resolve()
+        config_defaults = _load_run_config(resolved_config_file)
+
     parser = argparse.ArgumentParser(description="Run large-cohort wave-style tessellation simulation.")
+    parser.add_argument(
+        "--config-file",
+        type=Path,
+        default=resolved_config_file,
+        help="Optional JSON run preset. Any explicit CLI flag overrides file values.",
+    )
     parser.add_argument("--grid", default="3x3", help="Grid dimensions, e.g. 3x3")
     parser.add_argument("--agents-per-cell", type=int, default=17000)
     parser.add_argument("--weeks", type=int, default=6)
     parser.add_argument("--active-rate", type=float, default=0.02)
     parser.add_argument("--max-hop", type=int, default=4)
     parser.add_argument("--patience-per-hop", type=int, default=1)
+    parser.add_argument(
+        "--solver",
+        choices=("python", "scipy"),
+        default="python",
+        help="Assignment solver backend: python (built-in Hungarian) or scipy (linear_sum_assignment).",
+    )
     parser.add_argument(
         "--matching-mode",
         choices=("global", "partition_bridge"),
@@ -2986,6 +3497,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="For partition_bridge mode: retry rounds using remaining declarations after local/bridge stages.",
+    )
+    parser.add_argument(
+        "--tessellation-topology",
+        choices=("hex_voronoi", "grid_queen"),
+        default="hex_voronoi",
+        help="hex_voronoi uses 6-neighbor ring hops (Voronoi-like); grid_queen keeps legacy square/diagonal hops.",
+    )
+    parser.add_argument(
+        "--wave-expansion-mode",
+        choices=("week_ring", "week_plus_patience", "patience"),
+        default="week_ring",
+        help="week_ring: week1=home, week2=ring1, ...; week_plus_patience: max(week ring, patience); patience: legacy patience-only.",
     )
     parser.add_argument(
         "--panel-mode",
@@ -3010,14 +3533,70 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decomposition-rate", type=float, default=None, help="Probability that a declaration becomes a decomposed multi-need bundle.")
     parser.add_argument("--cross-context-want-rate", type=float, default=None, help="Probability a want is sampled from adjacent context.")
     parser.add_argument(
+        "--max-cycle-length",
+        type=int,
+        default=None,
+        help="Maximum agents per cycle. Use 0 for uncapped mode (bounded only by active graph size).",
+    )
+    parser.add_argument(
         "--params-overrides-file",
         type=Path,
         default=None,
         help="Optional JSON file containing EngineParams overrides (or {\"params_overrides\": {...}}).",
     )
+    parser.add_argument(
+        "--sparkov-dataset-dir",
+        type=Path,
+        default=None,
+        help="Path containing Sparkov CSVs (fraudTrain.csv / fraudTest.csv).",
+    )
+    parser.add_argument(
+        "--sparkov-download",
+        action="store_true",
+        help=f"Download Sparkov dataset from Kaggle handle '{SPARKOV_DEFAULT_HANDLE}' via kagglehub.",
+    )
+    parser.add_argument(
+        "--sparkov-max-rows",
+        type=int,
+        default=None,
+        help="Optional row cap for Sparkov profiling (for quick tests).",
+    )
+    parser.add_argument(
+        "--sparkov-category-map-file",
+        type=Path,
+        default=SPARKOV_DEFAULT_CATEGORY_MAP_FILE,
+        help="JSON file mapping Sparkov categories to ShareWith contexts/skills.",
+    )
+    parser.add_argument(
+        "--sparkov-profile-out",
+        type=Path,
+        default=None,
+        help="Optional output path for derived Sparkov calibration profile JSON.",
+    )
+    parser.add_argument(
+        "--sparkov-apply-recommendations",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply Sparkov-derived recommended declaration settings when explicit CLI values are absent.",
+    )
     parser.add_argument("--seed", type=int, default=20260218)
     parser.add_argument("--outdir", type=Path, default=ROOT / "artifacts" / "wave_fulltilt")
-    return parser.parse_args()
+    if config_defaults:
+        parser.set_defaults(**config_defaults)
+    args = parser.parse_args(argv)
+    if args.config_file is not None:
+        args.config_file = args.config_file.expanduser().resolve()
+    if isinstance(args.params_overrides_file, str):
+        args.params_overrides_file = Path(args.params_overrides_file)
+    if isinstance(args.sparkov_dataset_dir, str):
+        args.sparkov_dataset_dir = Path(args.sparkov_dataset_dir)
+    if isinstance(args.sparkov_category_map_file, str):
+        args.sparkov_category_map_file = Path(args.sparkov_category_map_file)
+    if isinstance(args.sparkov_profile_out, str):
+        args.sparkov_profile_out = Path(args.sparkov_profile_out)
+    if isinstance(args.outdir, str):
+        args.outdir = Path(args.outdir)
+    return args
 
 
 def _resolve_spice_parameters(args: argparse.Namespace) -> Tuple[int, int, float, float]:
@@ -3042,7 +3621,37 @@ def _resolve_spice_parameters(args: argparse.Namespace) -> Tuple[int, int, float
 
 def main() -> None:
     args = parse_args()
+    if args.config_file is not None:
+        print(f"Run preset: {args.config_file}")
+
+    sparkov_profile: Optional[Dict[str, Any]] = None
+    sparkov_dataset_dir = _resolve_sparkov_dataset_dir(args)
+    if sparkov_dataset_dir is not None:
+        print(f"Sparkov dataset: {sparkov_dataset_dir}")
+        category_map = _load_sparkov_category_map(args.sparkov_category_map_file)
+        sparkov_profile = _derive_sparkov_profile(
+            sparkov_dataset_dir,
+            category_map,
+            max_rows=args.sparkov_max_rows,
+        )
+        if args.sparkov_apply_recommendations:
+            _apply_sparkov_recommendations(args, sparkov_profile)
+            rec = sparkov_profile["recommended"]
+            print(
+                "Applied Sparkov recommendations: "
+                f"offers={rec['max_offers_per_agent']} wants={rec['max_wants_per_agent']} "
+                f"decomp={rec['decomposition_rate']:.3f} cross={rec['cross_context_want_rate']:.3f}"
+            )
+        sparkov_profile_out = args.sparkov_profile_out
+        if sparkov_profile_out is not None:
+            sparkov_profile_out = sparkov_profile_out.expanduser().resolve()
+            sparkov_profile_out.parent.mkdir(parents=True, exist_ok=True)
+            sparkov_profile_out.write_text(json.dumps(sparkov_profile, indent=2), encoding="utf-8")
+            print(f"Sparkov profile saved: {sparkov_profile_out}")
+
     max_offers, max_wants, decomposition_rate, cross_context_rate = _resolve_spice_parameters(args)
+    sparkov_context_weights_cfg = _sparkov_cfg_context_weights(sparkov_profile) if sparkov_profile else None
+    sparkov_skill_weights_cfg = _sparkov_cfg_skill_weights(sparkov_profile) if sparkov_profile else None
     cfg = SimulationConfig(
         grid=_parse_grid(args.grid),
         agents_per_cell=args.agents_per_cell,
@@ -3062,8 +3671,17 @@ def main() -> None:
         matching_mode=args.matching_mode,
         bridge_hop=max(1, int(args.bridge_hop)),
         fallback_rounds=max(0, int(args.fallback_rounds)),
+        tessellation_topology=str(args.tessellation_topology),
+        wave_expansion_mode=str(args.wave_expansion_mode),
+        context_weights=sparkov_context_weights_cfg,
+        skill_weights=sparkov_skill_weights_cfg,
     )
     cfg.outdir.mkdir(parents=True, exist_ok=True)
+    solver_requested = str(args.solver).strip().lower()
+    solver_resolved = solver_requested
+    if solver_requested == "scipy" and not _SCIPY_AVAILABLE:
+        print("solver=scipy requested but scipy is unavailable; falling back to python.")
+        solver_resolved = "python"
 
     start = time.perf_counter()
     agents, home_cell, _ = _build_agents(cfg)
@@ -3078,6 +3696,7 @@ def main() -> None:
         f"wants(mean)={_mean(float(v) for v in want_counts):.2f} multi-need-share="
         f"{(sum(1 for v in want_counts if v > 1) / len(want_counts)):.3f}"
     )
+    print(f"Matching solver: requested={solver_requested} resolved={solver_resolved} scipy_available={_SCIPY_AVAILABLE}")
 
     params = server.DEFAULT_PARAMS
     if args.params_overrides_file is not None:
@@ -3089,6 +3708,9 @@ def main() -> None:
         if not isinstance(overrides, dict):
             raise ValueError("params-overrides-file must contain an object or {\"params_overrides\": {...}}")
         params = params.with_overrides(overrides)
+    if args.max_cycle_length is not None:
+        params = params.with_overrides({"max_cycle_length": int(args.max_cycle_length)})
+    params = params.with_overrides({"matching_solver": solver_resolved})
     rng = random.Random(cfg.seed + 99)
 
     weekly_rows: List[Dict[str, Any]] = []
@@ -3113,6 +3735,9 @@ def main() -> None:
             max_hop=cfg.max_hop,
             patience_per_hop=cfg.patience_per_hop,
             seed=week_seed,
+            week_index=week,
+            wave_expansion_mode=cfg.wave_expansion_mode,
+            topology=cfg.tessellation_topology,
             variant=cfg.variant,
             trail_memory=trail_memory if cfg.variant == "F" else None,
             matching_mode=cfg.matching_mode,
@@ -3122,7 +3747,12 @@ def main() -> None:
         if cfg.variant == "F":
             _update_trail_memory(trail_memory=trail_memory, cycles=cycles, home_cell=home_cell)
         _update_agents_from_projection(active_agents, projection)
-        wave_stats = _cross_cell_stats(matching=matching, cycles=cycles, home_cell=home_cell)
+        wave_stats = _cross_cell_stats(
+            matching=matching,
+            cycles=cycles,
+            home_cell=home_cell,
+            topology=cfg.tessellation_topology,
+        )
         week_elapsed = time.perf_counter() - t0
 
         reaches = [reach_by_agent[a.agent_id] for a in active_agents]
@@ -3138,6 +3768,7 @@ def main() -> None:
             "matching_size": metrics["matchingSize"],
             "cycle_count": metrics["cycleCount"],
             "completed_cycles": metrics["completedCycles"],
+            "max_cycle_length_observed": metrics["maxCycleLength"],
             "completed_per_1000_active": metrics["completedCycles"] * 1000.0 / len(active_agents),
             "unmet_ratio": metrics["unmetWantsAfterExecution"] / max(metrics["totalWants"], 1),
             "avg_trust": metrics["avgTrust"],
@@ -3161,6 +3792,7 @@ def main() -> None:
         print(
             f"week={week:02d} active={len(active_agents)} runtime={week_elapsed:.2f}s "
             f"reach>=1={row['share_reach_ge1']:.3f} completed/1000={row['completed_per_1000_active']:.3f} "
+            f"max_cycle={row['max_cycle_length_observed']} "
             f"unmet={row['unmet_ratio']:.3f} cross_completed={row['completed_cross_share']:.3f}"
         )
 
@@ -3174,11 +3806,25 @@ def main() -> None:
         "active_rate": cfg.active_rate,
         "panel_mode": cfg.panel_mode,
         "variant": cfg.variant,
+        "solver_requested": solver_requested,
+        "solver_resolved": solver_resolved,
+        "scipy_available": _SCIPY_AVAILABLE,
         "matching_mode": cfg.matching_mode,
         "bridge_hop": cfg.bridge_hop,
         "fallback_rounds": cfg.fallback_rounds,
+        "max_cycle_length_setting": int(params.max_cycle_length),
+        "unbounded_cycle_length_mode": bool(params.max_cycle_length <= 0),
+        "tessellation_topology": cfg.tessellation_topology,
+        "wave_expansion_mode": cfg.wave_expansion_mode,
         "spice_profile": cfg.spice_profile,
+        "config_file": str(args.config_file) if args.config_file else "",
         "params_overrides_file": str(args.params_overrides_file.resolve()) if args.params_overrides_file else "",
+        "sparkov_dataset_dir": str(sparkov_dataset_dir) if sparkov_dataset_dir else "",
+        "sparkov_rows_profiled": int(sparkov_profile["rows_profiled"]) if sparkov_profile else 0,
+        "sparkov_mapping_coverage": float(sparkov_profile["mapping_coverage"]) if sparkov_profile else 0.0,
+        "sparkov_fraud_rate": float(sparkov_profile["fraud_rate"]) if sparkov_profile else 0.0,
+        "sparkov_mean_categories_per_card": float(sparkov_profile["mean_categories_per_card"]) if sparkov_profile else 0.0,
+        "sparkov_mean_contexts_per_card": float(sparkov_profile["mean_contexts_per_card"]) if sparkov_profile else 0.0,
         "max_offers_per_agent": cfg.max_offers_per_agent,
         "max_wants_per_agent": cfg.max_wants_per_agent,
         "decomposition_rate": cfg.decomposition_rate,
@@ -3196,6 +3842,7 @@ def main() -> None:
         "final_share_reach_ge2": float(weekly_rows[-1]["share_reach_ge2"]) if weekly_rows else 0.0,
         "mean_matching_cross_share": _mean(float(row["matching_cross_share"]) for row in weekly_rows),
         "mean_completed_cross_share": _mean(float(row["completed_cross_share"]) for row in weekly_rows),
+        "max_cycle_length_observed": max(int(row["max_cycle_length_observed"]) for row in weekly_rows) if weekly_rows else 0,
         "mean_local_cycle_count": _mean(float(row["local_cycle_count"]) for row in weekly_rows),
         "mean_bridge_cycle_count": _mean(float(row["bridge_cycle_count"]) for row in weekly_rows),
         "mean_fallback_cycle_count": _mean(float(row["fallback_cycle_count"]) for row in weekly_rows),
