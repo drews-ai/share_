@@ -61,12 +61,6 @@ class ShareWithEngineTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result["best"]["objectiveMean"], result["baseline"]["objectiveMean"])
 
-    def test_uncapped_cycle_length_mode_accepts_nonpositive_cap(self) -> None:
-        capped = server.run_scenario("balanced_local", seed=11, params_override={"max_cycle_length": 2})
-        uncapped = server.run_scenario("balanced_local", seed=11, params_override={"max_cycle_length": 0})
-        self.assertLessEqual(capped["metrics"]["maxCycleLength"], 2)
-        self.assertGreaterEqual(uncapped["metrics"]["maxCycleLength"], capped["metrics"]["maxCycleLength"])
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

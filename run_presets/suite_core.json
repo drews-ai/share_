@@ -1,8 +1,0 @@
-{
-  "presets": [
-    "run_presets/smoke_core.json",
-    "run_presets/partition_bridge_ideation.json",
-    "run_presets/high_trust_network.json",
-    "run_presets/large_cohort_probe.json"
-  ]
-}
